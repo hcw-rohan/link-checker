@@ -1,4 +1,5 @@
-#README
+# README
+Built entirely from copilot prompts in about an hour.
 
 ## How to run
 create virtual environment
