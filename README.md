@@ -14,4 +14,4 @@ install dependencies
 ```pip3 install requests beautifulsoup4 lxml```
 
 check url
-``` python3 link-checker.py <url>
+```python3 link-checker.py <url>```
