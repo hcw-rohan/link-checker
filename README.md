@@ -5,10 +5,10 @@ Built entirely from copilot prompts in about an hour.
 
 ## How to run
 create virtual environment
-``` python3 -m venv link-checker```
+```python3 -m venv link-checker```
 
 start virtual environment
-``` source link-checker/bin/activate ```
+```source link-checker/bin/activate```
 
 install dependencies
 ```pip3 install requests beautifulsoup4 lxml```
