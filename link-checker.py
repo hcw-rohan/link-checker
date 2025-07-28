@@ -8,6 +8,9 @@ from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
 import concurrent.futures
 import time
+import threading
+
+REQUEST_DELAY = 1  # seconds between requests
 
 def find_sitemap(url):
     candidates = [
@@ -50,8 +53,7 @@ def parse_sitemap(sitemap_url):
         ns = tree.tag.split('}')[0] + '}'
 
     # If sitemap index, recurse into each sitemap
-    for sitemap in tree.findall(f'.//{ns}
-sitemap'):
+    for sitemap in tree.findall(f'.//{ns}sitemap'):
         loc = sitemap.find(f'{ns}loc')
         if loc is not None and loc.text:
             urls.extend(parse_sitemap(loc.text))
@@ -67,13 +69,13 @@ sitemap'):
 def check_links(page_url):
     bad_links = []
     try:
+        time.sleep(REQUEST_DELAY)  # Add delay before fetching the page
         resp = requests.get(page_url, timeout=30)
         if resp.status_code != 200:
             return bad_links
         soup = BeautifulSoup(resp.content, 'lxml')  # Use lxml parser
         for tag in soup.find_all(['a', 'img', 'link', 'script']):
-            # Skip <link rel="preconnect"
-> and <link rel="dns-prefetch">
+            # Skip <link rel="preconnect"> and <link rel="dns-prefetch">
             if (
                 tag.name == 'link'
                 and tag.get('rel')
@@ -83,28 +85,36 @@ def check_links(page_url):
             attr = 'href' if tag.name in ['a', 'link'] else 'src'
             link = tag.get(attr)
             if link:
+                # Only check http/https links
+                if not (link.startswith('http://') or link.startswith('https://')):
+                    continue
+                # Ignore links to xmlrpc.php
+                if 'xmlrpc.php' in link:
+                    continue
                 full_link = urljoin(page_url, link)
                 try:
                     headers = {'User-Agent': 'Mozilla/5.0 (compatible; LinkChecker/1.0)'}
+                    time.sleep(REQUEST_DELAY)  # Add delay before checking each link
                     start = time.time()
                     r = requests.head(full_link, allow_redirects=True, timeout=30, headers=headers)
                     elapsed = time.time() - start
                     code = r.status_code
                 except SSLError:
-                    # Ignore SSL errors
-
                     continue
                 except requests.RequestException as e:
                     code = 'ERR'
                     elapsed = None
                     print(f"Error checking link {full_link} on page {page_url}: {e}", file=sys.stderr)
-                if code != 200 or (elapsed is not None and elapsed > 1):
-                    bad_links.append({
+                if code != 200 or (elapsed is not None and elapsed > 10):
+                    bad_link = {
                         'code': code,
                         'page': page_url,
                         'broken_link': full_link,
                         'response_time': elapsed
-                    })
+                    }
+                    rt = f" ({elapsed:.2f}s)" if elapsed is not None else ""
+                    print(f"{code} {page_url} -> {full_link}{rt}")
+                    bad_links.append(bad_link)
     except requests.RequestException:
         pass
     return bad_links
@@ -126,6 +136,9 @@ def crawl_site(start_url, max_pages=100):
             resp = requests.get(url, timeout=30, headers=headers)
             if resp.status_code != 200:
                 continue
+            content_type = resp.headers.get('Content-Type', '')
+            if 'html' not in content_type:
+                continue  # Skip non-HTML pages
             found_pages.append(url)
             soup = BeautifulSoup(resp.content, 'lxml')
             for tag in soup.find_all('a'):
@@ -141,32 +154,37 @@ def crawl_site(start_url, max_pages=100):
     return found_pages
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python link-checker.py <url>")
-        sys.exit(1)
-    url = sys.argv[1]
-    sitemap_url = find_sitemap(url)
-    if not sitemap_url:
-        print("Sitemap not found. Crawling site for links...")
-        pages = crawl_site(url)
-    else:
-        print(f"Using sitemap: {sitemap_url}")
-        pages = parse_sitemap(sitemap_url)
-    print(f"Found {len(pages)} pages to check.")
+    try:
+        if len(sys.argv) != 2:
+            print("Usage: python link-checker.py <url>")
+            sys.exit(1)
+        url = sys.argv[1]
+        sitemap_url = find_sitemap(url)
+        if not sitemap_url:
+            print("Sitemap not found. Crawling site for links...")
+            pages = crawl_site(url)
+        else:
+            print(f"Using sitemap: {sitemap_url}")
+            pages = parse_sitemap(sitemap_url)
+        print(f"Found {len(pages)} pages to check.")
 
-    all_bad_links = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
-        results = executor.map(check_links, pages)
-        for bad_links in results:
-            all_bad_links.extend(bad_links)
+        all_bad_links = []
+        # Reduce concurrency to avoid overload
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            results = executor.map(check_links, pages)
+            for bad_links in results:
+                all_bad_links.extend(bad_links)
 
-    if all_bad_links:
-        print("Bad links found or slow responses:")
-        for item in all_bad_links:
-            rt = f" ({item['response_time']:.2f}s)" if item.get('response_time') is not None else ""
-            print(f"{item['code']} {item['page']} -> {item['broken_link']}{rt}")
-    else:
-        print("All links returned 200 OK and responded quickly.")
+        if all_bad_links:
+            print("Bad links found or slow responses:")
+            for item in all_bad_links:
+                rt = f" ({item['response_time']:.2f}s)" if item.get('response_time') is not None else ""
+                print(f"{item['code']} {item['page']} -> {item['broken_link']}{rt}")
+        else:
+            print("All links returned 200 OK and responded quickly.")
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Exiting gracefully.")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
